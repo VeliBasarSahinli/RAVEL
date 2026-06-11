@@ -628,6 +628,6 @@ Yeni servis yazarken referans desenler: multi-stage Dockerfile (non-root uid 100
 
 **RAVEL** — *Her öğrenciye kendi öğretmeni.*
 
-Detaylı spec için → [`CLAUDE.md`](CLAUDE.md) · Karar günlüğü → [`docs/decisions.md`](docs/decisions.md)
+Karar günlüğü → [`docs/decisions.md`](docs/decisions.md)
 
 </div>
