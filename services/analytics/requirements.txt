@@ -1,0 +1,4 @@
+# analytics — Assessment & Analytics service
+# Filled with pinned versions in Step 2.
+# Expected: aiokafka, asyncpg (DB-2 read-only), polars (or pandas),
+#           pydantic-settings

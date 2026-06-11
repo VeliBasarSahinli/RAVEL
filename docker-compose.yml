@@ -1,0 +1,446 @@
+# RAVEL — Step 1: Data plane infrastructure
+# Brings up Kafka (KRaft, no Zookeeper), Postgres + PgBouncer,
+# Redis, Qdrant, MinIO. Observability stack (Prometheus / Grafana /
+# Jaeger / ELK) is intentionally deferred — see CLAUDE.md.
+#
+# All ports exposed below are dev-only conveniences. In production
+# only API Gateway (added in Step 2) is published; the rest stays
+# inside the bridge network.
+
+name: ravel
+
+services:
+  # ─────────── PostgreSQL (DB-1 + DB-2) ───────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: ravel_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres   # bootstrap; init.sql creates ravel_db1, ravel_db2
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}   # consumed by init_app_role.sh
+      # Adım 8a — default admin seed (only used on fresh volume)
+      ADMIN_DEFAULT_USERNAME: ${ADMIN_DEFAULT_USERNAME:-admin}
+      ADMIN_DEFAULT_PASSWORD: ${ADMIN_DEFAULT_PASSWORD:-ravel_admin_2025}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
+      - ./infra/postgres/init_app_role.sh:/docker-entrypoint-initdb.d/02_init_app_role.sh:ro
+      - ./infra/postgres/migrations/002_auth.sql:/docker-entrypoint-initdb.d/03_002_auth.sql:ro
+      - ./infra/postgres/seed_admin.sh:/docker-entrypoint-initdb.d/04_seed_admin.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ravel_net
+
+  # ─────────── PgBouncer (connection pooler in front of Postgres) ───────────
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.23.1-p0
+    container_name: ravel_pgbouncer
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+    # Default image entrypoint generates a single-DB config from env. We
+    # override it: write userlist.txt from env at runtime (admin + app
+    # users), then launch PgBouncer with our own multi-DB pgbouncer.ini.
+    # NOTE: dev uses auth_type=plain. In production switch to
+    # scram-sha-256 with hashed userlist or auth_query.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        {
+          printf '"%s" "%s"\n' "$$POSTGRES_USER" "$$POSTGRES_PASSWORD"
+          printf '"%s" "%s"\n' "ravel_app"      "$$POSTGRES_APP_PASSWORD"
+        } > /etc/pgbouncer/userlist.txt
+        chmod 600 /etc/pgbouncer/userlist.txt
+        exec pgbouncer /etc/pgbouncer/pgbouncer.ini
+    ports:
+      - "${PGBOUNCER_PORT}:6432"
+    volumes:
+      - ./infra/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+    networks:
+      - ravel_net
+
+  # ─────────── Redis (sessions, semantic cache, pub/sub) ───────────
+  redis:
+    image: redis:7.4-alpine
+    container_name: ravel_redis
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD} --no-auth-warning ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - ravel_net
+
+  # ─────────── Kafka (KRaft, single-node) ───────────
+  # Using Apache's official image. Bitnami removed their free public tags
+  # in mid-2025 (moved to paid "Bitnami Secure Images"), so bitnami/kafka:*
+  # is no longer pullable.
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: ravel_kafka
+    restart: unless-stopped
+    user: root   # needed so the container can chown the named volume on first boot
+    environment:
+      # KRaft single-node — no Zookeeper
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_NUM_PARTITIONS: "10"          # CLAUDE.md: min. 10 partitions per topic
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+    ports:
+      - "${KAFKA_EXTERNAL_PORT}:9094"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+    networks:
+      - ravel_net
+
+  # ─────────── Qdrant (vector DB) ───────────
+  qdrant:
+    image: qdrant/qdrant:v1.11.0
+    container_name: ravel_qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_HTTP_PORT}:6333"    # REST
+      - "${QDRANT_GRPC_PORT}:6334"    # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - ravel_net
+
+  # ─────────── API Gateway (Step 2a) ───────────
+  # FastAPI service: JWT auth, WebSocket sessions, Kafka producer/consumer.
+  api_gateway:
+    build:
+      context: ./services/api_gateway
+      dockerfile: Dockerfile
+    container_name: ravel_api_gateway
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Adım 8a: auth tablosu için DB-1 zorunlu
+      pgbouncer:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      API_GATEWAY_PORT: "8000"
+      LOG_LEVEL: INFO
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: HS256
+      JWT_EXPIRATION_SECONDS: "7200"
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Adım 8 — DB + CORS
+      DB1_DSN: ${DB1_DSN}
+      DB2_DSN: ${DB2_DSN}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN}
+    ports:
+      - "${API_GATEWAY_PORT}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request as r; r.urlopen(\"http://localhost:8000/health\").read()'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ravel_net
+
+  # ─────────── Orchestrator (Step 3) ───────────
+  # Pure async Python; consumes student_interactions_stream + content_retrieval_responses,
+  # produces content_retrieval_requests + content_delivery_stream.
+  orchestrator:
+    build:
+      context: ./services/orchestrator
+      dockerfile: Dockerfile
+    container_name: ravel_orchestrator
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    environment:
+      LOG_LEVEL: INFO
+      HEALTH_PORT: "8001"
+      DB1_DSN: ${DB1_DSN}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ORCHESTRATOR_GROUP_ID: ${ORCHESTRATOR_GROUP_ID}
+      RAG_REQUEST_TIMEOUT_SECONDS: ${RAG_REQUEST_TIMEOUT_SECONDS}
+      LLM_MOCK_MODE: ${LLM_MOCK_MODE}
+      # Adım 6 — Manim akışı parametreleri
+      MANIM_MAX_RETRIES: ${MANIM_MAX_RETRIES:-3}
+      MANIM_RENDER_TIMEOUT_SECONDS: ${MANIM_RENDER_TIMEOUT_SECONDS:-45}
+      MANIM_VIDEO_QUALITY: ${MANIM_VIDEO_QUALITY:-720p}
+      VIDEO_READY_TIMEOUT_SECONDS: ${VIDEO_READY_TIMEOUT_SECONDS:-90}
+      # Adım 7 — LLM Gateway
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      LLM_REQUEST_TIMEOUT_SECONDS: ${LLM_REQUEST_TIMEOUT_SECONDS:-60}
+      DB2_DSN: ${DB2_DSN}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import socket; s=socket.socket(); s.settimeout(2); s.connect((\"localhost\",8001)); s.close()'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - ravel_net
+
+  # ─────────── Bandit (Step 4) — Actor + Learner in one container ───────────
+  bandit:
+    build:
+      context: ./services/bandit
+      dockerfile: Dockerfile
+    container_name: ravel_bandit
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    environment:
+      LOG_LEVEL: INFO
+      HEALTH_PORT: "8002"
+      DB2_DSN: ${DB2_DSN}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_WEIGHTS: ${MINIO_BUCKET_WEIGHTS}
+      BANDIT_GROUP_ID: ${BANDIT_GROUP_ID}
+      BANDIT_NUM_ACTIONS: ${BANDIT_NUM_ACTIONS}
+      BANDIT_CONTEXT_DIM: ${BANDIT_CONTEXT_DIM}
+      BANDIT_ALPHA: ${BANDIT_ALPHA}
+      BANDIT_MINI_BATCH_SIZE: ${BANDIT_MINI_BATCH_SIZE}
+      BANDIT_MINI_BATCH_TIMEOUT_SECONDS: ${BANDIT_MINI_BATCH_TIMEOUT_SECONDS}
+      ACTOR_INFERENCE_TIMEOUT_MS: ${ACTOR_INFERENCE_TIMEOUT_MS}
+      REWARD_ALPHA: ${REWARD_ALPHA}
+      REWARD_BETA: ${REWARD_BETA}
+      REWARD_GAMMA: ${REWARD_GAMMA}
+      # Test override — boş string production; "video" / "manim_video" testte (ADR-017).
+      BANDIT_FORCE_DECISION: ${BANDIT_FORCE_DECISION:-}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import socket; s=socket.socket(); s.settimeout(2); s.connect((\"localhost\",8002)); s.close()'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    networks:
+      - ravel_net
+
+  # ─────────── RAG (Step 5) — content retrieval + admin API ───────────
+  # FastAPI admin (8003) + Kafka consumer (content_retrieval_requests),
+  # iki paralel asyncio task (ADR-013).
+  rag:
+    build:
+      context: ./services/rag
+      dockerfile: Dockerfile
+    container_name: ravel_rag
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      # Adım 7e: llm_configs admin endpoint'leri için DB-1
+      pgbouncer:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: INFO
+      ADMIN_API_PORT: ${ADMIN_API_PORT}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIM: ${EMBEDDING_DIM}
+      SIMILARITY_THRESHOLD: ${SIMILARITY_THRESHOLD}
+      SIMILARITY_THRESHOLD_RELAXED: ${SIMILARITY_THRESHOLD_RELAXED}
+      TOP_K: ${TOP_K}
+      RERANK_TOP_N: ${RERANK_TOP_N}
+      RAG_GROUP_ID: ${RAG_GROUP_ID}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_CONTENT: ${MINIO_BUCKET_CONTENT}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      JWT_ALGORITHM: HS256
+      # Adım 7e — LLM admin endpoint'leri (DB-1 + AES key)
+      DB1_DSN: ${DB1_DSN}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+    ports:
+      - "${ADMIN_API_PORT}:8003"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request as r; r.urlopen(\"http://localhost:8003/health\").read()'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ravel_net
+
+  # ─────────── Manim Worker (Step 6) — sandbox + render + MinIO upload ───────────
+  # CPU-yoğun render diğer servisleri etkilemesin diye izole container'da.
+  # Sistem bağımlılıkları: ffmpeg, ghostscript, dvisvgm, minimal TeX Live.
+  # İlk build ~10-15 dk, image ~1.6-1.9 GB.
+  manim_worker:
+    build:
+      context: ./services/manim_worker
+      dockerfile: Dockerfile
+    container_name: ravel_manim_worker
+    restart: unless-stopped
+    depends_on:
+      kafka:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: INFO
+      HEALTH_PORT: "8004"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET_VIDEOS: ${MINIO_BUCKET_VIDEOS:-ravel-videos}
+      MANIM_WORKER_GROUP_ID: ${MANIM_WORKER_GROUP_ID:-manim_worker}
+      MANIM_MAX_RETRIES: ${MANIM_MAX_RETRIES:-3}
+      MANIM_RENDER_TIMEOUT_SECONDS: ${MANIM_RENDER_TIMEOUT_SECONDS:-45}
+      MANIM_VIDEO_QUALITY: ${MANIM_VIDEO_QUALITY:-720p}
+      MANIM_TEMP_DIR: ${MANIM_TEMP_DIR:-/tmp/manim_renders}
+      SANDBOX_ALLOWED_IMPORTS: ${SANDBOX_ALLOWED_IMPORTS:-manim,numpy,math,random}
+      SANDBOX_SYNTAX_CHECK_TIMEOUT_SECONDS: ${SANDBOX_SYNTAX_CHECK_TIMEOUT_SECONDS:-5}
+      VIDEO_URL_EXPIRATION_SECONDS: ${VIDEO_URL_EXPIRATION_SECONDS:-604800}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import socket; s=socket.socket(); s.settimeout(2); s.connect((\"localhost\",8004)); s.close()'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - ravel_net
+
+  # ─────────── Frontend (Step 8) — Vite build → nginx ───────────
+  # Multi-stage Dockerfile; nginx static + /api,/auth → api_gateway,
+  # /admin → rag, /ws (Upgrade) → api_gateway. Browser'a tek port:
+  # FRONTEND_PORT (default 5173) → container :80.
+  frontend:
+    build:
+      context: ./services/frontend
+      dockerfile: Dockerfile
+    container_name: ravel_frontend
+    restart: unless-stopped
+    depends_on:
+      api_gateway:
+        condition: service_healthy
+      rag:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    healthcheck:
+      # IPv6 [::1] BusyBox wget'in default'u; nginx IPv4 only — 127.0.0.1 explicit.
+      test: ["CMD-SHELL", "wget --spider --quiet http://127.0.0.1/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ravel_net
+
+  # ─────────── MinIO (S3-compatible object store) ───────────
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: ravel_minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "${MINIO_API_PORT}:9000"      # S3 API
+      - "${MINIO_CONSOLE_PORT}:9001"  # Web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - ravel_net
+
+volumes:
+  postgres_data:
+  redis_data:
+  kafka_data:
+  qdrant_data:
+  minio_data:
+
+networks:
+  ravel_net:
+    driver: bridge
+    name: ravel_net

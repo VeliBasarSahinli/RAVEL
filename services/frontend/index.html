@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>∑</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0A0F1E" />
+    <title>RAVEL — Matematik öğrenmenin en zeki yolu</title>
+    <!-- Tema persist'ini hidrasyon öncesi uygula → ilk render flicker'ı yok. -->
+    <script>
+      (function () {
+        try {
+          var raw = localStorage.getItem("ravel-theme");
+          if (raw) {
+            var parsed = JSON.parse(raw);
+            var t = (parsed && parsed.state && parsed.state.theme) || "dark";
+            if (t === "light") document.documentElement.classList.add("light");
+          }
+        } catch (e) { /* ignore */ }
+      })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700&family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="font-sans bg-ravel-bg text-ravel-text antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

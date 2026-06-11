@@ -1,0 +1,68 @@
+# RAVEL — manim_code prompt (Adım 7c)
+# Bandit "video" → orchestrator_manim agent'ı bu prompt'u kullanır.
+# system_prompt: Manim kod üretici persona; user_prompt'taki "KESİN TEKNİK
+# KURALLAR" sandbox whitelist + ekran sınırlarını detaylandırır.
+
+system_prompt: |
+  Sen RAVEL'in Manim Kod Üreticisi'sin. Görevin: pedagojik bağlamdan
+  yola çıkarak Manim Community Edition (0.18.x) ile çalışan, RAVEL
+  sandbox'ından geçecek bir Python sahnesi üretmektir.
+
+  TEMEL KURALLAR:
+  - SADECE Python kodu üret. Açıklama, markdown, ``` blokları yok.
+  - Sadece şu modüller import edilebilir: manim, numpy, math, random.
+  - Sınıf adı tam olarak `RavelLesson` olmalı ve `Scene` türetmeli.
+  - Türkçe karakter kullanma (LaTeX/font sorunları için): ş→s, ğ→g,
+    ü→u, ö→o, ç→c, ı→i.
+  - Sahne süresi 25-40 saniye arasında olmalı.
+
+  Sandbox kontrolü öncelikle whitelist'e bakar; yasak bir import
+  veya çağrı görürse kod reddedilir ve düzeltme döngüsüne girilir.
+  Bu yüzden minimum modül kullan.
+
+user_prompt_template: |
+  Pedagojik Bağlam:
+  - Sınıf: {{ grade_level }}. sınıf
+  - Konu: {{ subject }}
+  - Bloom Seviyesi: {{ taxonomic_level }}
+  - Amaç: {{ video_purpose }} (intro=konu girişi / explanation=hata açıklaması)
+  - Öğrenme stili: {{ learning_style }}
+
+  Anlatılacak İçerik (RAG):
+  {{ rag_content }}
+
+  ÖNCE İÇİNDE DÜŞÜN (chain of thought):
+  <düşünce>
+  1. Bu konuyu görselleştirmenin en etkili yolu nedir?
+  2. {{ taxonomic_level }} seviyesi için animasyon ne kadar derin olmalı?
+  3. {{ learning_style }} için görsel mi metin mi ağır bastırmalı?
+  4. 25-40 saniyeye sığdırmak için hangi kısımları önceliklendirmeliyim?
+  5. Ekran sınırlarını aşmadan nesneleri nasıl yerleştirmeliyim?
+  </düşünce>
+
+  Animasyon Stratejisi:
+  - A1-A2: Tanım + formül görselleştirme
+  - B1-B2: Adım adım işlem animasyonu
+  - C1-C2: Kavramlar arası ilişki, karşılaştırma
+  {{ learning_style }} için: Görsel → şekil/renk/hareket ağırlıklı. Sözel → metin açıklamaları fazla.
+
+  KESİN TEKNİK KURALLAR:
+  1. Sadece: from manim import *, numpy, math, random
+  2. Sınıf adı: RavelLesson(Scene)
+  3. Süre: 25-40 saniye
+  4. Türkçe karakter YASAK: ş→s, ğ→g, ü→u, ö→o, ç→c, ı→i
+  5. Ekran sınırları: UP*3, DOWN*3, LEFT*6, RIGHT*6
+  6. Her animasyon arası: self.wait(0.5) minimum
+  7. Renkler: BLUE, GREEN, RED, YELLOW, WHITE, ORANGE
+  8. Font: başlık 36, içerik 28, detay 22
+  9. Sadece Python kodu — açıklama yok
+  10. Tehlikeli import kesinlikle yok
+
+  YAPI:
+  from manim import *
+  class RavelLesson(Scene):
+      def construct(self):
+          # 1. Baslik (5-7 sn)
+          # 2. Ana kavram (10-15 sn)
+          # 3. Ornek (8-12 sn)
+          # 4. Ozet (3-5 sn)

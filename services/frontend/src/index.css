@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* RAVEL — tema değişkenleri (CSS custom properties).
+   Tailwind config'deki ravel-* renkleri var(--*)'lara bağlı; bu yüzden
+   :root (dark, varsayılan) ile .light blokları arasında geçiş tüm
+   ekranı tek tıkta dönüştürür. Aksan renkleri (blue/purple/gold/green/red)
+   sabit; sadece arka plan + metin değişir. */
+:root {
+  --ravel-bg: #0A0F1E;
+  --ravel-surface: #111827;
+  --ravel-elevated: #1F2937;
+  --ravel-text: #F9FAFB;
+  --ravel-muted: #9CA3AF;
+  --ravel-border: rgba(255, 255, 255, 0.08);
+  color-scheme: dark;
+}
+
+.light {
+  --ravel-bg: #F8FAFC;
+  --ravel-surface: #FFFFFF;
+  --ravel-elevated: #F1F5F9;
+  --ravel-text: #0F172A;
+  --ravel-muted: #64748B;
+  --ravel-border: rgba(0, 0, 0, 0.08);
+  color-scheme: light;
+}
+
+/* RAVEL — global base layer */
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: var(--ravel-bg);
+    color: var(--ravel-text);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition: background-color 0.25s ease, color 0.25s ease;
+  }
+
+  ::selection {
+    background-color: rgba(139, 92, 246, 0.35);
+    color: var(--ravel-text);
+  }
+
+  /* Scrollbar — temaya duyarlı */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--ravel-elevated);
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--ravel-muted);
+  }
+}
+
+@layer components {
+  /* Aurora text — used for the wordmark and hero headlines */
+  .text-aurora {
+    background-image: linear-gradient(135deg, #3B82F6 0%, #8B5CF6 50%, #F59E0B 100%);
+    background-size: 200% 200%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: shimmer 4s linear infinite;
+  }
+
+  /* Glassmorphism card */
+  .card-glass {
+    @apply backdrop-blur-md bg-white/[0.04] border border-white/[0.08]
+           rounded-2xl shadow-elevated;
+  }
+}

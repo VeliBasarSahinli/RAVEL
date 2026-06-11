@@ -1,0 +1,16 @@
+# RAVEL — API Gateway pinned dependencies (2026-05)
+# Python 3.11
+
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+websockets==13.1
+python-jose[cryptography]==3.3.0
+# bcrypt SDK direct (passlib 1.7.4 + bcrypt 4.x uyumsuzluğu nedeniyle —
+# passlib `bcrypt.__about__.__version__` okumayı deniyor, bcrypt 4.x'te kaldırıldı).
+bcrypt==4.2.0
+aiokafka==0.12.0
+redis[hiredis]==5.2.0
+pydantic-settings==2.6.1
+httpx==0.28.0
+# Adım 8a — auth + gamification queries
+asyncpg==0.30.0

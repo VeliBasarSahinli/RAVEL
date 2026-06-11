@@ -1,0 +1,41 @@
+# Environment
+.env
+.env.local
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Claude Code (yerel ajan ayarları — makineye özel, paylaşılmaz)
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Frontend
+node_modules/
+dist/
+build/
+frontend/.next/
+frontend/build/
+
+# Local data dumps
+data/
+volumes/
+
+# İç dokümanlar (repoya dahil değil)
+Ravel Yazılım Raporu.pdf
