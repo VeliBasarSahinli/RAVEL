@@ -606,7 +606,7 @@ LLM Gateway (018) · Frontend (019).
 
 ## 🤝 Katkı ve Geliştirme Kuralları
 
-CLAUDE.md'deki kurallar **bağlayıcıdır**:
+Aşağıdaki kurallar **bağlayıcıdır** Dikkat:
 
 1. Her servis kendi `venv`'inde çalışır; bağımlılıklar `requirements.txt`'te **pinli**.
 2. Tüm konfigürasyon `.env`'den okunur — **hardcoded değer yok**.
